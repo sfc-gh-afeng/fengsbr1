@@ -1,0 +1,55 @@
+CREATE OR REPLACE FUNCTION BI_DB_DEV.ODS_LINKEDIN.JOB_EXPERIENCE_V2("ID" VARCHAR(16777216), "INDEX" NUMBER(38,0), "TITLE_JOB" VARCHAR(16777216), "DESCRIPTION_JOB" VARCHAR(16777216))
+RETURNS TABLE ("ID" VARCHAR(16777216), "INDEX" NUMBER(38,0), "TITLE" VARCHAR(16777216), "SPECIALTIES" VARIANT, "POSITIONLEVEL" VARIANT, "SENIORITYLEVEL" VARIANT, "COMPETENCIES" VARIANT)
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.8'
+PACKAGES = ('snowflake-snowpark-python==*','spacy==3.5.3','spacy-model-en_core_web_sm==3.5.0','pandas==*')
+HANDLER = 'handler'
+IMPORTS = ('@BI_DB_DEV.ODS_LINKEDIN.ST_SPACY/patterns.jsonl')
+AS '
+import pandas as pd
+from collections import Counter
+import spacy
+import sys
+import os
+
+class handler:
+    def __init__(self):
+        self.nlp = spacy.load("en_core_web_sm", disable=["ner"])
+        import_dir = sys._xoptions[''snowflake_import_directory'']
+        ruler = self.nlp.add_pipe("entity_ruler")
+        ruler.from_disk(os.path.join(import_dir, "patterns.jsonl"))
+        self.data = []
+
+    def process(self, id, index, title_job, description_job):
+        
+        title_doc = self.nlp(title_job if title_job else "")
+        description_doc = self.nlp(description_job if description_job else "")
+        
+        count_technos_des = Counter([ent.ent_id_ for ent in description_doc.ents if ent.label_ in ["TECHNO", "COMPETENCY"]])
+        count_technos_title = Counter([ent.ent_id_ for ent in title_doc.ents if ent.label_ in ["TECHNO", "COMPETENCY"]])
+        dict_competencies = dict(Counter(count_technos_des) + Counter(count_technos_title))
+
+        count_specialties = Counter([ent.ent_id_ for ent in title_doc.ents if ent.label_ == "SPECIALTY"])
+        list_specialties = [key for key, value in count_specialties.items()]
+
+        count_positionlevel = Counter([ent.ent_id_ for ent in title_doc.ents if ent.label_ == "POSITIONLEVEL"])
+        list_positionlevel = [key for key, value in count_positionlevel.items()]
+
+        count_senioritylevel = Counter([ent.ent_id_ for ent in title_doc.ents if ent.label_ == "SENIORITYLEVEL"])
+        list_senioritylevel = [key for key, value in count_senioritylevel.items()]
+
+        self.data.append({
+            "ID": id,
+            "INDEX": index,
+            "TITLE": title_job,
+            "SPECIALTIES": str(list_specialties),
+            "POSITIONLEVEL": str(list_positionlevel),
+            "SENIORITYLEVEL": str(list_senioritylevel),
+            "COMPETENCIES": str(dict_competencies)
+        })
+
+    def end_partition(self):
+        df = pd.DataFrame(self.data)
+        for _, row in df.iterrows():
+            yield (row[''ID''], row[''INDEX''], row[''TITLE''], row[''SPECIALTIES''], row[''POSITIONLEVEL''], row[''SENIORITYLEVEL''], row[''COMPETENCIES''])
+';
